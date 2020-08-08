@@ -20,6 +20,7 @@ fun <F> createBatchAggregatorActor(notebookId: NotebookId,
         concurrent.fx.concurrent {
             val queueToActor = Queue.unbounded<F, Message>(concurrent).bind()
             val stateRef = Ref(concurrent, State.empty).bind()
+
             val asyncInsertNotify = InsertNotify(
                     notebookId,
                     pageId,
@@ -30,14 +31,14 @@ fun <F> createBatchAggregatorActor(notebookId: NotebookId,
                     stateRef,
                     concurrent
             )
-            asyncInsertNotify.runAsync().bind()
+            asyncInsertNotify.run().async(concurrent).bind()
 
             val insertTimer = InsertTimer(
                     queueToActor,
                     insertTimeout,
                     concurrent
             )
-            insertTimer.runAsync().bind()
+            insertTimer.run().async(concurrent).bind()
 
             val aggregator: BatchAggregator<F> = object : BatchAggregator<F> {
                 override fun addNotify(notify: Notification): Kind<F, Unit> =
@@ -49,13 +50,16 @@ fun <F> createBatchAggregatorActor(notebookId: NotebookId,
             aggregator
         }
 
+private fun <F> Kind<F, Unit>.async(concurrent: Concurrent<F>): Kind<F, Unit> {
+    val effect = this
+    return concurrent.fx.concurrent {
+        effect.fork().void().bind()
+    }
+}
+
 private class InsertTimer<F>(private val outgoing: Enqueue<F, Message>,
                              private val insertTimeout: Duration,
                              private val concurrent: Concurrent<F>) : Monad<F> by concurrent {
-    fun runAsync(): Kind<F, Unit> =
-            concurrent.fx.concurrent {
-                run().fork().void().bind()
-            }
 
     fun run(): Kind<F, Unit> =
             concurrent.fx
@@ -76,11 +80,6 @@ private class InsertNotify<F>(private val notebookId: NotebookId,
                               private val incoming: Dequeue<F, Message>,
                               private val stateRef: Ref<F, State>,
                               private val concurrent: Concurrent<F>) : Monad<F> by concurrent {
-
-    fun runAsync(): Kind<F, Unit> =
-            concurrent.fx.concurrent {
-                run().fork().void().bind()
-            }
 
     fun run(): Kind<F, Unit> =
             concurrent.fx

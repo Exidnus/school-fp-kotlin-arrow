@@ -5,6 +5,7 @@ import arrow.fx.*
 import arrow.fx.typeclasses.Concurrent
 import arrow.fx.typeclasses.Duration
 import arrow.typeclasses.Monad
+import com.school.algebra.async
 import com.school.model.NotebookId
 import com.school.model.Notification
 import com.school.model.PageId
@@ -18,10 +19,10 @@ fun <F> createBatchAggregatorActor(notebookId: NotebookId,
                                    concurrent: Concurrent<F>): Kind<F, BatchAggregator<F>> =
 
         concurrent.fx.concurrent {
-            val queueToActor = Queue.unbounded<F, Message>(concurrent).bind()
+            val queueToActor = Queue.unbounded<Message>().bind()
             val stateRef = Ref(concurrent, State.empty).bind()
 
-            val asyncInsertNotify = InsertNotify(
+            val insertNotify = InsertNotify(
                     notebookId,
                     pageId,
                     batchSizeLimit,
@@ -31,7 +32,7 @@ fun <F> createBatchAggregatorActor(notebookId: NotebookId,
                     stateRef,
                     concurrent
             )
-            asyncInsertNotify.run().async(concurrent).bind()
+            insertNotify.run().async(concurrent).bind()
 
             val insertTimer = InsertTimer(
                     queueToActor,
@@ -49,13 +50,6 @@ fun <F> createBatchAggregatorActor(notebookId: NotebookId,
             }
             aggregator
         }
-
-private fun <F> Kind<F, Unit>.async(concurrent: Concurrent<F>): Kind<F, Unit> {
-    val effect = this
-    return concurrent.fx.concurrent {
-        effect.fork().void().bind()
-    }
-}
 
 private class InsertTimer<F>(private val outgoing: Enqueue<F, Message>,
                              private val insertTimeout: Duration,

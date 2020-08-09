@@ -9,7 +9,7 @@ interface LessonService<F> {
      */
     fun lesson(): Kind<F, Lesson>
 
-    fun joinLesson(participantId: Int): Kind<F, Lesson>
+    fun joinLesson(participantId: Int): Kind<F, Unit>
 
-    fun raiseHand(participantId: Int): Kind<F, Lesson>
+    fun raiseHand(participantId: Int): Kind<F, Unit>
 }

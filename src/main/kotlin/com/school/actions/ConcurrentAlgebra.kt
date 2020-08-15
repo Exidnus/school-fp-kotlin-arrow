@@ -1,4 +1,4 @@
-package com.school.algebra
+package com.school.actions
 
 import arrow.Kind
 import arrow.fx.typeclasses.Concurrent

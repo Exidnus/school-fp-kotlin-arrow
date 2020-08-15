@@ -5,7 +5,7 @@ import arrow.fx.*
 import arrow.fx.typeclasses.Concurrent
 import arrow.fx.typeclasses.Duration
 import arrow.typeclasses.Monad
-import com.school.algebra.async
+import com.school.actions.async
 import com.school.model.NotebookId
 import com.school.model.Notification
 import com.school.model.PageId

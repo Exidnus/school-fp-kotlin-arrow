@@ -7,6 +7,7 @@ import arrow.core.toOption
 import arrow.fx.*
 import arrow.fx.typeclasses.Concurrent
 import arrow.syntax.collections.tail
+import arrow.typeclasses.Monad
 import com.school.model.Lesson
 import com.school.model.LessonId
 import com.school.model.UserId
@@ -26,42 +27,50 @@ fun <F> runLessonContainer(lessonStorage: LessonStorage<F>,
 3. Release, empty map -> remove entry from map
 4. Release, map contains -> pull first promise and complete it, do not remove WaitersQueue if it's empty
  */
-private class LockService<F>(private val queueToActor: Dequeue<F, Message<F>>,
+private class LockService<F>(private val queueToActor: Queue<F, Message<F>>,
                              private val lockWaitersRef: Ref<F, Map<LessonId, WaitersQueue<F>>>,
-                             private val concurrent: Concurrent<F>) {
-    fun run(): Kind<F, Unit> {
-        concurrent.fx.concurrent {
-            val state = lockWaitersRef.get().bind()
-            when (val msg = queueToActor.take().bind()) {
-                is Message.Acquire -> {
-                    when (val waitersQueueOpt = state[msg.lessonId].toOption()) {
-                        is Some -> {
-                            state + Pair(msg.lessonId, waitersQueueOpt.t.offer(msg.promise))
+                             private val concurrent: Concurrent<F>) : Monad<F> by concurrent {
+    fun run(): Kind<F, Unit> =
+            concurrent.fx
+                    .concurrent {
+                        val state = lockWaitersRef.get().bind()
+                        val newState = when (val msg = queueToActor.take().bind()) {
+                            is Message.Acquire -> {
+                                when (val waitersQueueOpt = state[msg.lessonId].toOption()) {
+                                    is Some -> {
+                                        state + Pair(msg.lessonId, waitersQueueOpt.t.offer(msg.promise))
+                                    }
+                                    is None -> {
+                                        msg.promise.complete(resource(msg.lessonId)).bind()
+                                        state + Pair(msg.lessonId, WaitersQueue.empty())
+                                    }
+                                }
+                            }
+                            is Message.Release -> {
+                                val waitersQueue = state.getValue(msg.lessonId)
+                                if (waitersQueue.isEmpty()) {
+                                    state - msg.lessonId
+                                } else {
+                                    val (next, tail) = waitersQueue.pull()
+                                    next.complete(resource(msg.lessonId))
+                                    state + Pair(msg.lessonId, tail)
+                                }
+                            }
                         }
-                        is None -> {
-                            msg.promise.complete().bind()
-                            state + Pair(msg.lessonId, WaitersQueue.empty())
-                        }
+                        lockWaitersRef.set(newState).bind()
                     }
-                }
-                is Message.Release -> {
-                    val (remaining, next) = state.getValue(msg.lessonId).pull()
-                    next.complete().bind()
-                    if (remaining.isEmpty()) {
-                        state - msg.lessonId
-                    } else {
-                        state + Pair(msg.lessonId, remaining)
-                    }
-                }
-            }
+                    .repeat(concurrent, Schedule.forever(concurrent))
+                    .void()
 
-        }
-    }
+    private fun resource(lessonId: LessonId): Resource<F, Throwable, Unit> =
+            Resource(
+                    acquire = { concurrent.just(Unit) },
+                    release = { _ -> queueToActor.offer(Message.Release(lessonId)) },
+                    BR = concurrent
+            )
 }
 
-//typealias WaitersQueue<F> = List<Promise<F, Resource<F, Exception, Unit>>>
-
-data class WaitersQueue<F>(private val queue: List<Promise<F, Resource<F, Exception, Unit>>>) {
+data class WaitersQueue<F>(private val queue: List<Promise<F, Resource<F, Throwable, Unit>>>) {
     companion object {
         fun <F> empty(): WaitersQueue<F> = WaitersQueue(listOf())
     }
@@ -69,13 +78,13 @@ data class WaitersQueue<F>(private val queue: List<Promise<F, Resource<F, Except
     fun offer(promise: AcquirePromise<F>): WaitersQueue<F> =
             WaitersQueue(this.queue + promise)
 
-    fun pull(): Pair<WaitersQueue<F>, AcquirePromise<F>> =
-            Pair(WaitersQueue(queue.tail()), queue.first())
+    fun pull(): Pair<AcquirePromise<F>, WaitersQueue<F>> =
+            Pair(queue.first(), WaitersQueue(queue.tail()))
 
     fun isEmpty(): Boolean = queue.isEmpty()
 }
 
-typealias AcquirePromise<F> = Promise<F, Resource<F, Exception, Unit>>
+typealias AcquirePromise<F> = Promise<F, Resource<F, Throwable, Unit>>
 
 private sealed class Message<F> {
     data class Acquire<F>(val lessonId: LessonId, val promise: AcquirePromise<F>) : Message<F>()

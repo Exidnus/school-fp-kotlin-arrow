@@ -108,6 +108,7 @@ sealed class Notification {
     data class FinishPaint(val line: String) : Notification()
 }
 
+typealias UserId = Int
 typealias LessonId = Int
 typealias ParticipantId = Int
 typealias PageId = Int

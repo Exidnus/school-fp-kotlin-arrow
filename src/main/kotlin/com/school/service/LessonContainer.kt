@@ -2,6 +2,8 @@ package com.school.service
 
 import arrow.Kind
 import com.school.model.Lesson
+import com.school.model.LessonId
+import com.school.model.UserId
 import java.time.Instant
 
 interface LessonContainer<F> {
@@ -12,5 +14,7 @@ interface LessonContainer<F> {
                              val beginTime: Instant,
                              val endTime: Instant)
 
-    fun perform(f: (Lesson) -> Kind<F, Lesson>): Kind<F, Lesson>
+    fun joinLesson(lessonId: LessonId, userId: UserId): Kind<F, Result<Unit>>
+
+    fun perform(f: (Lesson) -> Kind<F, Lesson>): Kind<F, Result<Unit>>
 }

@@ -33,34 +33,45 @@ private class LockService<F>(private val queueToActor: Queue<F, Message<F>>,
     fun run(): Kind<F, Unit> =
             concurrent.fx
                     .concurrent {
-                        val state = lockWaitersRef.get().bind()
                         val newState = when (val msg = queueToActor.take().bind()) {
-                            is Message.Acquire -> {
-                                when (val waitersQueueOpt = state[msg.lessonId].toOption()) {
-                                    is Some -> {
-                                        state + Pair(msg.lessonId, waitersQueueOpt.t.offer(msg.promise))
-                                    }
-                                    is None -> {
-                                        msg.promise.complete(resource(msg.lessonId)).bind()
-                                        state + Pair(msg.lessonId, WaitersQueue.empty())
-                                    }
-                                }
-                            }
-                            is Message.Release -> {
-                                val waitersQueue = state.getValue(msg.lessonId)
-                                if (waitersQueue.isEmpty()) {
-                                    state - msg.lessonId
-                                } else {
-                                    val (next, tail) = waitersQueue.pull()
-                                    next.complete(resource(msg.lessonId))
-                                    state + Pair(msg.lessonId, tail)
-                                }
-                            }
+                            is Message.Acquire ->
+                                handleAcquire(msg).bind()
+                            is Message.Release ->
+                                handleRelease(msg).bind()
                         }
                         lockWaitersRef.set(newState).bind()
                     }
                     .repeat(concurrent, Schedule.forever(concurrent))
                     .void()
+
+    private fun handleAcquire(msg: Message.Acquire<F>): Kind<F, Map<LessonId, WaitersQueue<F>>> =
+        concurrent.fx
+                .concurrent {
+                    val state = lockWaitersRef.get().bind()
+                    when (val waitersQueueOpt = state[msg.lessonId].toOption()) {
+                        is Some -> {
+                            state + Pair(msg.lessonId, waitersQueueOpt.t.offer(msg.promise))
+                        }
+                        is None -> {
+                            msg.promise.complete(resource(msg.lessonId)).bind()
+                            state + Pair(msg.lessonId, WaitersQueue.empty())
+                        }
+                    }
+                }
+
+    private fun handleRelease(msg: Message.Release<F>): Kind<F, Map<LessonId, WaitersQueue<F>>> =
+            concurrent.fx
+                    .concurrent {
+                        val state = lockWaitersRef.get().bind()
+                        val waitersQueue = state.getValue(msg.lessonId)
+                        if (waitersQueue.isEmpty()) {
+                            state - msg.lessonId
+                        } else {
+                            val (next, tail) = waitersQueue.pull()
+                            next.complete(resource(msg.lessonId)).bind()
+                            state + Pair(msg.lessonId, tail)
+                        }
+                    }
 
     private fun resource(lessonId: LessonId): Resource<F, Throwable, Unit> =
             Resource(

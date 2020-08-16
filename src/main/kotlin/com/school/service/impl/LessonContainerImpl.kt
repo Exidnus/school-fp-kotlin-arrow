@@ -1,6 +1,7 @@
 package com.school.service.impl
 
 import arrow.Kind
+import arrow.core.Either
 import arrow.core.None
 import arrow.core.Some
 import arrow.core.toOption
@@ -8,17 +9,55 @@ import arrow.fx.*
 import arrow.fx.typeclasses.Concurrent
 import arrow.syntax.collections.tail
 import arrow.typeclasses.Monad
+import com.school.actions.async
 import com.school.model.Lesson
 import com.school.model.LessonId
 import com.school.model.UserId
 import com.school.service.LessonContainer
 import com.school.storage.LessonStorage
-import java.lang.Exception
+import com.school.Result
+import com.school.model.LessonState
+import com.school.service.LessonService
 
 //lessonStorage.addLesson(newLessonInfo)
 fun <F> runLessonContainer(lessonStorage: LessonStorage<F>,
-                           concurrent: Concurrent<F>): Kind<F, LessonContainer<F>> {
+                           concurrent: Concurrent<F>): Kind<F, LessonContainer<F>> =
+        concurrent.fx
+                .concurrent {
+                    val queueToActor = Queue.unbounded<Message<F>>().bind()
+                    val lockWaitersRef = Ref(mapOf<LessonId, WaitersQueue<F>>()).bind()
+                    val lockService = LockService(
+                            queueToActor,
+                            lockWaitersRef,
+                            concurrent
+                    )
+                    lockService.run().async(concurrent).bind()
 
+                    val lessonContainer: LessonContainer<F> = object : LessonContainer<F> {
+                        override fun createLesson(newLessonInfo: LessonContainer.LessonInfo): Kind<F, Result<Int>> =
+                                lessonStorage.addLesson(newLessonInfo)
+                                        .map { Result.pure(it) }
+
+                        override fun changeLesson(lessonId: LessonId, lessonInfo: LessonContainer.LessonInfo): Kind<F, Result<Unit>> {
+                            TODO("Not yet implemented")
+                        }
+
+                        override fun joinLesson(lessonId: LessonId, userId: UserId): Kind<F, Result<Unit>> {
+                            TODO("Not yet implemented")
+                        }
+
+                        override fun perform(f: (Lesson) -> Kind<F, Lesson>): Kind<F, Result<Unit>> {
+                            TODO("Not yet implemented")
+                        }
+                    }
+                    lessonContainer
+                }
+
+private class LessonServiceProvider<F>(inMemoryOrFromDb: Either<LessonService<F>, () -> LessonService<F>>) {
+    fun <A> runWithLoadFromMemoryIfNeed(): Kind<F, Result<A>> = TODO()
+
+    fun <A> runInMemoryOrInDbOnly(ifInMemory: (Lesson) -> Result<LessonState<A>>,
+                                  ifInDbOnly: () -> Kind<F, Result<A>>): Kind<F, Result<A>> = TODO()
 }
 
 /*
@@ -45,19 +84,19 @@ private class LockService<F>(private val queueToActor: Queue<F, Message<F>>,
                     .void()
 
     private fun handleAcquire(msg: Message.Acquire<F>): Kind<F, Map<LessonId, WaitersQueue<F>>> =
-        concurrent.fx
-                .concurrent {
-                    val state = lockWaitersRef.get().bind()
-                    when (val waitersQueueOpt = state[msg.lessonId].toOption()) {
-                        is Some -> {
-                            state + Pair(msg.lessonId, waitersQueueOpt.t.offer(msg.promise))
-                        }
-                        is None -> {
-                            msg.promise.complete(resource(msg.lessonId)).bind()
-                            state + Pair(msg.lessonId, WaitersQueue.empty())
+            concurrent.fx
+                    .concurrent {
+                        val state = lockWaitersRef.get().bind()
+                        when (val waitersQueueOpt = state[msg.lessonId].toOption()) {
+                            is Some -> {
+                                state + Pair(msg.lessonId, waitersQueueOpt.t.offer(msg.promise))
+                            }
+                            is None -> {
+                                msg.promise.complete(resource(msg.lessonId)).bind()
+                                state + Pair(msg.lessonId, WaitersQueue.empty())
+                            }
                         }
                     }
-                }
 
     private fun handleRelease(msg: Message.Release<F>): Kind<F, Map<LessonId, WaitersQueue<F>>> =
             concurrent.fx
@@ -81,7 +120,7 @@ private class LockService<F>(private val queueToActor: Queue<F, Message<F>>,
             )
 }
 
-data class WaitersQueue<F>(private val queue: List<Promise<F, Resource<F, Throwable, Unit>>>) {
+data class WaitersQueue<F>(private val queue: List<AcquirePromise<F>>) {
     companion object {
         fun <F> empty(): WaitersQueue<F> = WaitersQueue(listOf())
     }

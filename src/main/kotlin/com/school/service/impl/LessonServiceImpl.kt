@@ -3,6 +3,7 @@ package com.school.service.impl
 import arrow.Kind
 import arrow.core.Tuple2
 import arrow.fx.Ref
+import arrow.fx.Semaphore
 import arrow.fx.typeclasses.Concurrent
 import com.school.Result
 import com.school.actions.join
@@ -19,7 +20,11 @@ fun <F> runLesson(loadedLesson: LoadedLesson,
                   concurrent: Concurrent<F>): Kind<F, LessonService<F>> {
     val lesson = loadedLesson.toRuntime()
     return concurrent.fx.concurrent {
-        val ref = Ref(lesson).bind()
+        val lessonRunner = LessonRunner(
+                Ref(lesson).bind(),
+                Semaphore(1).bind(),
+                concurrent
+        )
         val lessonService: LessonService<F> = object : LessonService<F> {
             override fun lesson(): Kind<F, Result<Lesson>> =
                     ref.get().map { Result.pure(it) }
@@ -28,18 +33,27 @@ fun <F> runLesson(loadedLesson: LoadedLesson,
                     run(ref) { it.join(participantId, name) }
 
             override fun raiseHand(participantId: Int): Kind<F, Result<Unit>> =
-                run(ref) { it.raiseHand(participantId) }
+                    run(ref) { it.raiseHand(participantId) }
 
         }
         lessonService
     }
 }
 
-private fun <F, A> run(ref: Ref<F, Lesson>,
-                       action: (Lesson) -> Result<LessonState<A>>): Kind<F, Result<A>> =
-        ref.modify { lesson ->
-            val updateResult = action(lesson)
-            //TODO increment lesson version here?
+private class LessonRunner<F>(private val ref: Ref<F, Lesson>,
+                              private val lock: Semaphore<F>,
+                              private val concurrent: Concurrent<F>) {
+    private fun <A> run(action: (Lesson) -> Kind<F, Result<LessonState<A>>>): Kind<F, Result<A>> {
+        val refAction = concurrent.fx.concurrent {
+            val lesson = ref.get().bind()
+            val updateResult = action(lesson).bind()
             val newLesson = updateResult.fold({ lesson }, { it.lesson })
-            Tuple2(newLesson, updateResult.map { it.a })
+            ref.set(newLesson).bind()
+            updateResult.map { it.a }
         }
+
+        return lock.withPermit(refAction)
+    }
+
+}
+

@@ -4,5 +4,5 @@ import arrow.Kind
 import com.school.service.LessonContainer
 
 interface LessonStorage<F> {
-    fun addLesson(newLessonInfo: LessonContainer.NewLessonInfo): Kind<F, Int>
+    fun addLesson(newLessonInfo: LessonContainer.LessonInfo): Kind<F, Int>
 }

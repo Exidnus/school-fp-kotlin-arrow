@@ -4,15 +4,18 @@ import arrow.Kind
 import com.school.model.Lesson
 import com.school.model.LessonId
 import com.school.model.UserId
+import com.school.Result
 import java.time.Instant
 
 interface LessonContainer<F> {
-    fun createLesson(newLessonInfo: NewLessonInfo): Kind<F, Int>
+    fun createLesson(newLessonInfo: LessonInfo): Kind<F, Result<Int>>
 
-    data class NewLessonInfo(val subject: String,
-                             val description: String,
-                             val beginTime: Instant,
-                             val endTime: Instant)
+    data class LessonInfo(val subject: String,
+                          val description: String,
+                          val beginTime: Instant,
+                          val endTime: Instant)
+
+    fun changeLesson(lessonId: LessonId, lessonInfo: LessonInfo): Kind<F, Result<Unit>>
 
     fun joinLesson(lessonId: LessonId, userId: UserId): Kind<F, Result<Unit>>
 

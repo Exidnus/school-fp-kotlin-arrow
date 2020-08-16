@@ -1,39 +1,49 @@
 package com.school.actions
 
+import arrow.Kind
 import arrow.core.None
 import arrow.core.Option
 import arrow.core.Some
 import arrow.core.toOption
+import arrow.typeclasses.Applicative
+import arrow.typeclasses.Monad
 import com.school.*
 import com.school.model.*
 
-fun Lesson.join(participantId: Int, name: String): Result<EmptyLessonState> =
-        when (val findOpt = findParticipantOpt(participantId)) {
-            is Some -> {
-                if (findOpt.t.state == Participant.State.PRESENT) {
-                    Result.pure(LessonState.emptyState(this))
-                } else {
-                    Result.pure(
-                            LessonState.emptyState(this.copy(participants = this.participants + Pair(participantId, findOpt.t.join()))),
-                            listOf(Notification.ParticipantJoined(this.id, findOpt.t.toInfo()))
-                    )
+class LessonJoin<F>(private val saveNewcomerStudent: (ParticipantId) -> Kind<F, Unit>,
+                    monad: Monad<F>) : Monad<F> by monad {
+    fun run(lesson: Lesson, participantId: Int, name: String): Kind<F, Result<EmptyLessonState>> =
+            when (val findOpt = lesson.findParticipantOpt(participantId)) {
+                is Some -> {
+                    if (findOpt.t.state == Participant.State.PRESENT) {
+                        Result.pure(LessonState.emptyState(lesson)).just()
+                    } else {
+                        Result.pure(
+                                LessonState.emptyState(lesson.copy(participants = lesson.participants + Pair(participantId, findOpt.t.join()))),
+                                listOf(Notification.ParticipantJoined(lesson.id, findOpt.t.toInfo()))
+                        ).just()
+                    }
+                }
+                is None -> {
+                    val newStudent = Participant.newStudent(participantId, name)
+                    saveNewcomerStudent(participantId).map {
+                        Result.pure(
+                                LessonState.emptyState(lesson.copy(participants = lesson.participants + Pair(participantId, newStudent))),
+                                listOf(Notification.ParticipantJoined(lesson.id, newStudent.toInfo()))
+                        )
+                    }
                 }
             }
-            is None -> {
-                val newStudent = Participant.newStudent(participantId, name)
-                Result.pure(
-                        LessonState.emptyState(this.copy(participants = this.participants + Pair(participantId, newStudent))),
-                        listOf(Notification.ParticipantJoined(this.id, newStudent.toInfo()))
-                )
-            }
-        }
+}
 
-
-fun Lesson.raiseHand(participantId: Int): Result<EmptyLessonState> =
-        this.findParticipantRes(participantId)
-                .map { it.raiseHand() }
-                .map { LessonState.emptyState(this.copy(participants = this.participants + Pair(participantId, it))) }
-                .appendNotifications(listOf(Notification.HandPositionChanged(this.id, participantId, handRaised = true)))
+class LessonRaiseHand<F>(applicative: Applicative<F>) : Applicative<F> by applicative {
+    fun run(lesson: Lesson, participantId: Int): Kind<F, Result<EmptyLessonState>> =
+            lesson.findParticipantRes(participantId)
+                    .map { it.raiseHand() }
+                    .map { LessonState.emptyState(lesson.copy(participants = lesson.participants + Pair(participantId, it))) }
+                    .appendNotifications(listOf(Notification.HandPositionChanged(lesson.id, participantId, handRaised = true)))
+                    .just()
+}
 
 fun Lesson.findParticipantRes(participantId: ParticipantId): Result<Participant> =
         participants[participantId]

@@ -45,6 +45,9 @@ sealed class Result<out A> {
 
         fun void(): Result<Unit> = singleVoid
         fun void(notifications: List<Notification>): Result<Unit> = Success(Unit, notifications)
+
+        fun successIf(cond: Boolean, ifFalse: ErrorMsg): Result<Unit> =
+                if (cond) void() else Error(ifFalse)
     }
 }
 

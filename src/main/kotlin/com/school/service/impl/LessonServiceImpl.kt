@@ -9,6 +9,11 @@ import com.school.fold
 import com.school.map
 import com.school.model.Lesson
 import com.school.model.LessonState
+import com.school.model.LoadedLesson
+import com.school.service.LessonService
+
+fun <F> runLesson(loadedLesson: LoadedLesson,
+                  concurrent: Concurrent<F>): Kind<F, LessonService<F>> = TODO()
 
 //fun <F> runLesson(loadedLesson: LoadedLesson,
 //                  concurrent: Concurrent<F>): Kind<F, LessonService<F>> {
@@ -35,19 +40,14 @@ import com.school.model.LessonState
 //}
 
 private class LessonRunner<F>(private val ref: Ref<F, Lesson>,
-                              private val lock: Semaphore<F>,
                               private val concurrent: Concurrent<F>) {
-    private fun <A> run(action: (Lesson) -> Kind<F, Result<LessonState<A>>>): Kind<F, Result<A>> {
-        val refAction = concurrent.fx.concurrent {
-            val lesson = ref.get().bind()
-            val updateResult = action(lesson).bind()
-            val newLesson = updateResult.fold({ lesson }, { it.lesson })
-            ref.set(newLesson).bind()
-            updateResult.map { it.a }
-        }
-
-        return lock.withPermit(refAction)
-    }
-
+    private fun <A> run(action: (Lesson) -> Kind<F, Result<LessonState<A>>>): Kind<F, Result<A>> =
+            concurrent.fx.concurrent {
+                val lesson = ref.get().bind()
+                val updateResult = action(lesson).bind()
+                val newLesson = updateResult.fold({ lesson }, { it.lesson })
+                ref.set(newLesson).bind()
+                updateResult.map { it.a }
+            }
 }
 

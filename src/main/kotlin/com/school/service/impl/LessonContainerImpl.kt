@@ -1,29 +1,24 @@
 package com.school.service.impl
 
 import arrow.Kind
-import arrow.core.Either
-import arrow.core.None
-import arrow.core.Some
-import arrow.core.toOption
+import arrow.core.*
 import arrow.fx.*
 import arrow.fx.typeclasses.Concurrent
+import arrow.fx.typeclasses.Duration
 import arrow.syntax.collections.tail
 import arrow.typeclasses.Monad
 import com.school.ErrorMsg
 import com.school.actions.async
-import com.school.model.Lesson
-import com.school.model.LessonId
-import com.school.model.UserId
 import com.school.service.LessonContainer
 import com.school.storage.LessonStorage
 import com.school.Result
 import com.school.actions.LessonChange
 import com.school.actions.LessonJoin
-import com.school.model.LessonState
+import com.school.model.*
 import com.school.service.LessonService
 import com.school.storage.UserStorage
+import kotlin.collections.mapOf
 
-//lessonStorage.addLesson(newLessonInfo)
 fun <F> runLessonContainer(lessonStorage: LessonStorage<F>,
                            userStorage: UserStorage<F>,
                            concurrent: Concurrent<F>): Kind<F, LessonContainer<F>> =
@@ -31,12 +26,15 @@ fun <F> runLessonContainer(lessonStorage: LessonStorage<F>,
                 .concurrent {
                     val queueToActor = Queue.unbounded<Message<F>>().bind()
                     val lockWaitersRef = Ref(mapOf<LessonId, WaitersQueue<F>>()).bind()
-                    val lockService = LessonServiceProviderProvider(
+                    val lessons = Ref(mapOf<LessonId, LessonService<F>>()).bind()
+                    val provider = LessonServiceProviderProvider(
                             queueToActor,
                             lockWaitersRef,
+                            lessons,
+                            lessonStorage,
                             concurrent
                     )
-                    lockService.run().async(concurrent).bind()
+                    provider.run().async(concurrent).bind()
 
                     val lessonContainer: LessonContainer<F> = object : LessonContainer<F> {
                         override fun createLesson(newLessonInfo: LessonContainer.LessonInfo): Kind<F, Result<Int>> =
@@ -44,29 +42,35 @@ fun <F> runLessonContainer(lessonStorage: LessonStorage<F>,
                                         .map { Result.pure(it) }
 
                         override fun changeLesson(lessonId: LessonId, lessonInfo: LessonContainer.LessonInfo): Kind<F, Result<Unit>> =
-                            prepareLessonServiceProvider(queueToActor, lessonId, concurrent) {
-                                it.runInMemoryOrInDbOnly(
-                                        ifInMemory = { lesson -> LessonChange<F>().run(lesson, lessonInfo) },
-                                        ifInDbOnly = {
-                                            lessonStorage.updateLesson(lessonInfo)
-                                                    .map {
-                                                        Result.successIf(it, ErrorMsg.LESSON_NOT_FOUND)
-                                                    }
-                                        }
-                                )
-                            }
+                                prepareLessonServiceProvider(queueToActor, lessonId, concurrent) {
+                                    it.runInMemoryOrInDbOnly(
+                                            ifInMemory = { lesson -> LessonChange<F>().run(lesson, lessonInfo) },
+                                            ifInDbOnly = {
+                                                lessonStorage.updateLesson(lessonInfo)
+                                                        .map {
+                                                            Result.successIf(it, ErrorMsg.LESSON_NOT_FOUND)
+                                                        }
+                                            }
+                                    )
+                                }
 
                         override fun joinLesson(lessonId: LessonId, userId: UserId): Kind<F, Result<Unit>> =
-                                    prepareLessonServiceProvider(queueToActor, lessonId, concurrent) {
-                                        concurrent.fx.monad {
-                                            val userName = userStorage.getUserName(userId).bind()
-                                            it.runWithLoadFromMemoryIfNeed { lesson ->
-                                                LessonJoin(lessonStorage::addNewcomer, concurrent).run(lesson, userId, userName)
-                                            }.bind()
-                                        }
+                                prepareLessonServiceProvider(queueToActor, lessonId, concurrent) {
+                                    concurrent.fx.monad {
+                                        //TODO do out of lock section
+                                        val userName = userStorage.getUserName(userId).bind()
+                                        it.runWithLoadFromMemoryIfNeed { lesson ->
+                                            LessonJoin(lessonStorage::addNewcomer, concurrent).run(lesson, userId, userName)
+                                        }.bind()
                                     }
+                                }
 
                         override fun perform(f: (Lesson) -> Kind<F, Lesson>): Kind<F, Result<Unit>> {
+                            TODO("Not yet implemented")
+                        }
+
+                        override fun unloadInactive(inactiveTimeout: Duration): Kind<F, Int> {
+                            //get keys from lessons map
                             TODO("Not yet implemented")
                         }
                     }
@@ -84,13 +88,14 @@ private fun <F, A> prepareLessonServiceProvider(queueToActor: Queue<F, Message<F
             lessonProviderResource.use(run).bind()
         }
 
-class LessonServiceProvider<F>(private val inMemoryOrFromDb: Either<LessonService<F>, () -> LessonService<F>>) {
+class LessonServiceProvider<F>(private val inMemoryOrFromDb: Either<LessonService<F>, () -> Kind<F, LessonService<F>>>,
+                               monad: Monad<F>) : Monad<F> by monad {
     fun <A> runWithLoadFromMemoryIfNeed(action: (Lesson) -> Kind<F, Result<LessonState<A>>>): Kind<F, Result<A>> =
             when (inMemoryOrFromDb) {
                 is Either.Left ->
                     inMemoryOrFromDb.a.run(action)
                 is Either.Right ->
-                    inMemoryOrFromDb.b().run(action)
+                    inMemoryOrFromDb.b().flatMap { it.run(action) }//.run(action)
             }
 
 
@@ -112,6 +117,8 @@ class LessonServiceProvider<F>(private val inMemoryOrFromDb: Either<LessonServic
  */
 private class LessonServiceProviderProvider<F>(private val queueToActor: Queue<F, Message<F>>,
                                                private val lockWaitersRef: Ref<F, Map<LessonId, WaitersQueue<F>>>,
+                                               private val lessons: Ref<F, Map<LessonId, LessonService<F>>>,
+                                               private val lessonStorage: LessonStorage<F>,
                                                private val concurrent: Concurrent<F>) : Monad<F> by concurrent {
     fun run(): Kind<F, Unit> =
             concurrent.fx
@@ -158,10 +165,27 @@ private class LessonServiceProviderProvider<F>(private val queueToActor: Queue<F
 
     private fun resource(lessonId: LessonId): Resource<F, Throwable, LessonServiceProvider<F>> =
             Resource(
-                    acquire = { concurrent.just(Unit) },
+                    acquire = { lessonServiceProvider(lessonId) },
                     release = { _ -> queueToActor.offer(Message.Release(lessonId)) },
                     BR = concurrent
             )
+
+    private fun lessonServiceProvider(lessonId: LessonId): Kind<F, LessonServiceProvider<F>> =
+        concurrent.fx.concurrent {
+            when (val lessonServiceOpt = lessons.get().bind()[lessonId].toOption()) {
+                is Some -> LessonServiceProvider(lessonServiceOpt.t.left(), concurrent).just()
+                is None ->
+                    when (val loadedLessonOpt = lessonStorage.getLesson(lessonId).bind()) {
+                        is Some -> {
+                            val loadFromDb: () -> Kind<F, LessonService<F>> = {
+                                runLesson(loadedLessonOpt.t, concurrent)
+                            }
+                            LessonServiceProvider(loadFromDb.right(), concurrent).just()
+                        }
+                        is None -> LessonNotFound(lessonId).raiseError()
+                    }
+            }.bind()
+        }
 }
 
 data class WaitersQueue<F>(private val queue: List<AcquirePromise<F>>) {

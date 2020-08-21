@@ -113,3 +113,5 @@ typealias LessonId = Int
 typealias ParticipantId = Int
 typealias PageId = Int
 typealias NotebookId = Int
+
+class LessonNotFound(lessonId: LessonId) : RuntimeException()

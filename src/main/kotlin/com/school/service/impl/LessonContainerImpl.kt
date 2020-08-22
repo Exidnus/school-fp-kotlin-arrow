@@ -88,14 +88,14 @@ private fun <F, A> prepareLessonServiceProvider(queueToActor: Queue<F, Message<F
             lessonProviderResource.use(run).bind()
         }
 
-class LessonServiceProvider<F>(private val inMemoryOrFromDb: Either<LessonService<F>, () -> Kind<F, LessonService<F>>>,
+class LessonServiceProvider<F>(private val inMemoryOrFromDb: Either<LessonService<F>, Kind<F, LessonService<F>>>,
                                monad: Monad<F>) : Monad<F> by monad {
     fun <A> runWithLoadFromMemoryIfNeed(action: (Lesson) -> Kind<F, Result<LessonState<A>>>): Kind<F, Result<A>> =
             when (inMemoryOrFromDb) {
                 is Either.Left ->
                     inMemoryOrFromDb.a.run(action)
                 is Either.Right ->
-                    inMemoryOrFromDb.b().flatMap { it.run(action) }//.run(action)
+                    inMemoryOrFromDb.b.flatMap { it.run(action) }//.run(action)
             }
 
 
@@ -176,13 +176,10 @@ private class LessonServiceProviderProvider<F>(private val queueToActor: Queue<F
                 is Some -> LessonServiceProvider(lessonServiceOpt.t.left(), concurrent).just()
                 is None ->
                     when (val loadedLessonOpt = lessonStorage.getLesson(lessonId).bind()) {
-                        is Some -> {
-                            val loadFromDb: () -> Kind<F, LessonService<F>> = {
-                                runLesson(loadedLessonOpt.t, concurrent)
-                            }
-                            LessonServiceProvider(loadFromDb.right(), concurrent).just()
-                        }
-                        is None -> LessonNotFound(lessonId).raiseError()
+                        is Some ->
+                            LessonServiceProvider(runLesson(loadedLessonOpt.t, concurrent).right(), concurrent).just()
+                        is None ->
+                            LessonNotFoundException(lessonId).raiseError()
                     }
             }.bind()
         }

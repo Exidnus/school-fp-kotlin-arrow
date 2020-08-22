@@ -65,9 +65,10 @@ fun <F> runLessonContainer(lessonStorage: LessonStorage<F>,
                                     }
                                 }
 
-                        override fun perform(f: (Lesson) -> Kind<F, Lesson>): Kind<F, Result<Unit>> {
-                            TODO("Not yet implemented")
-                        }
+                        override fun <A> perform(lessonId: LessonId, f: (Lesson) -> Kind<F, Result<LessonState<A>>>): Kind<F, Result<A>> =
+                                prepareLessonServiceProvider(queueToActor, lessonId, concurrent) {
+                                    it.runWithLoadFromMemoryIfNeed(f)
+                                }
 
                         override fun unloadInactive(inactiveTimeout: Duration): Kind<F, Int> {
                             //get keys from lessons map
@@ -176,8 +177,12 @@ private class LessonServiceProviderProvider<F>(private val queueToActor: Queue<F
                 is Some -> LessonServiceProvider(lessonServiceOpt.t.left(), concurrent).just()
                 is None ->
                     when (val loadedLessonOpt = lessonStorage.getLesson(lessonId).bind()) {
-                        is Some ->
-                            LessonServiceProvider(runLesson(loadedLessonOpt.t, concurrent).right(), concurrent).just()
+                        is Some -> {
+                            val lessonService = runLesson(loadedLessonOpt.t, concurrent)
+                            val boundLessonService = lessonService.bind()
+                            lessons.update { it + Pair(lessonId, boundLessonService) }.bind()
+                            LessonServiceProvider(lessonService.right(), concurrent).just()
+                        }
                         is None ->
                             LessonNotFoundException(lessonId).raiseError()
                     }

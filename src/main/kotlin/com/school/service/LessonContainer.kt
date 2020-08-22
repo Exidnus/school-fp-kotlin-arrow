@@ -6,6 +6,7 @@ import com.school.model.Lesson
 import com.school.model.LessonId
 import com.school.model.UserId
 import com.school.Result
+import com.school.model.LessonState
 import java.time.Instant
 
 interface LessonContainer<F> {
@@ -20,7 +21,7 @@ interface LessonContainer<F> {
 
     fun joinLesson(lessonId: LessonId, userId: UserId): Kind<F, Result<Unit>>
 
-    fun perform(f: (Lesson) -> Kind<F, Lesson>): Kind<F, Result<Unit>>
+    fun <A> perform(lessonId: LessonId, f: (Lesson) -> Kind<F, Result<LessonState<A>>>): Kind<F, Result<A>>
 
     fun unloadInactive(inactiveTimeout: Duration): Kind<F, Int>
 }

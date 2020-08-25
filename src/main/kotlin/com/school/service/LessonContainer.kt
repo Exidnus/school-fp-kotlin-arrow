@@ -23,5 +23,7 @@ interface LessonContainer<F> {
 
     fun <A> perform(lessonId: LessonId, f: (Lesson) -> Kind<F, Result<LessonState<A>>>): Kind<F, Result<A>>
 
+    fun updateInactivityTime(): Kind<F, Unit>
+
     fun unloadInactive(inactiveTimeout: Duration): Kind<F, Int>
 }

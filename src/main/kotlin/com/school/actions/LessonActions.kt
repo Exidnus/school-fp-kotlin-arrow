@@ -1,10 +1,7 @@
 package com.school.actions
 
 import arrow.Kind
-import arrow.core.None
-import arrow.core.Option
-import arrow.core.Some
-import arrow.core.toOption
+import arrow.core.*
 import arrow.fx.typeclasses.MonadDefer
 import arrow.typeclasses.Applicative
 import arrow.typeclasses.Monad
@@ -59,6 +56,20 @@ class LessonRaiseHand<F>(applicative: Applicative<F>) : Applicative<F> by applic
                     .map { LessonState.emptyState(lesson.copy(participants = lesson.participants + Pair(participantId, it))) }
                     .appendNotifications(listOf(Notification.HandPositionChanged(lesson.id, participantId, handRaised = true)))
                     .just()
+}
+
+class LessonUpdateInactivityTime<F>(private val time: Time<F>,
+                                    monad: Monad<F>) : Monad<F> by monad {
+    fun run(lesson: Lesson): Kind<F, Result<EmptyLessonState>> {
+        val newLesson = if (lesson.participants.values.all { it.state == Participant.State.NOT_PRESENT }) {
+            time.now().map { now ->
+                lesson.copy(lastInactiveTime = lesson.lastInactiveTime.getOrElse { now }.some())
+            }
+        } else {
+            lesson.just()
+        }
+        return newLesson.map { Result.pure(LessonState.emptyState(it)) }
+    }
 }
 
 fun Lesson.findParticipantRes(participantId: ParticipantId): Result<Participant> =

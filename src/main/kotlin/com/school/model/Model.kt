@@ -1,5 +1,7 @@
 package com.school.model
 
+import arrow.core.None
+import arrow.core.Option
 import java.time.Instant
 
 data class User(val id: Int, val name: String, val email: String, val password: String)
@@ -10,7 +12,8 @@ data class Lesson(val id: LessonId,
                   val subject: String,
                   val description: String,
                   val beginTime: Instant,
-                  val endTime: Instant)
+                  val endTime: Instant,
+                  val lastInactiveTime: Option<Instant>)
 
 data class LessonState<out A>(val lesson: Lesson, val a: A) {
     companion object {
@@ -66,7 +69,8 @@ fun LoadedLesson.toRuntime(): Lesson =
                 subject = subject,
                 description = description,
                 beginTime = beginTime,
-                endTime = endTime
+                endTime = endTime,
+                lastInactiveTime = None
         )
 
 data class LoadedParticipant(val id: ParticipantId,

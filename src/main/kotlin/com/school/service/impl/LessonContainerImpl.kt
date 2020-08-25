@@ -2,6 +2,7 @@ package com.school.service.impl
 
 import arrow.Kind
 import arrow.core.*
+import arrow.core.extensions.set.foldable.traverse_
 import arrow.fx.*
 import arrow.fx.typeclasses.Concurrent
 import arrow.fx.typeclasses.Duration
@@ -12,8 +13,10 @@ import com.school.actions.async
 import com.school.service.LessonContainer
 import com.school.storage.LessonStorage
 import com.school.Result
+import com.school.Time
 import com.school.actions.LessonChange
 import com.school.actions.LessonJoin
+import com.school.actions.LessonUpdateInactivityTime
 import com.school.model.*
 import com.school.service.LessonService
 import com.school.storage.UserStorage
@@ -21,7 +24,8 @@ import kotlin.collections.mapOf
 
 fun <F> runLessonContainer(lessonStorage: LessonStorage<F>,
                            userStorage: UserStorage<F>,
-                           concurrent: Concurrent<F>): Kind<F, LessonContainer<F>> =
+                           concurrent: Concurrent<F>,
+                           time: Time<F>): Kind<F, LessonContainer<F>> =
         concurrent.fx
                 .concurrent {
                     val queueToActor = Queue.unbounded<Message<F>>().bind()
@@ -47,28 +51,39 @@ fun <F> runLessonContainer(lessonStorage: LessonStorage<F>,
                                             ifInMemory = { lesson -> LessonChange<F>().run(lesson, lessonInfo) },
                                             ifInDbOnly = {
                                                 lessonStorage.updateLesson(lessonInfo)
-                                                        .map {
-                                                            Result.successIf(it, ErrorMsg.LESSON_NOT_FOUND)
+                                                        .map { wasUpdated ->
+                                                            Result.successIf(wasUpdated, ErrorMsg.LESSON_NOT_FOUND)
                                                         }
                                             }
                                     )
                                 }
 
                         override fun joinLesson(lessonId: LessonId, userId: UserId): Kind<F, Result<Unit>> =
-                                prepareLessonServiceProvider(queueToActor, lessonId, concurrent) {
-                                    concurrent.fx.monad {
-                                        //TODO do out of lock section
-                                        val userName = userStorage.getUserName(userId).bind()
+                                concurrent.fx.concurrent {
+                                    val userName = userStorage.getUserName(userId).bind()
+                                    prepareLessonServiceProvider(queueToActor, lessonId, concurrent) {
                                         it.runWithLoadFromMemoryIfNeed { lesson ->
                                             LessonJoin(lessonStorage::addNewcomer, concurrent).run(lesson, userId, userName)
-                                        }.bind()
-                                    }
+                                        }
+                                    }.bind()
                                 }
+
 
                         override fun <A> perform(lessonId: LessonId, f: (Lesson) -> Kind<F, Result<LessonState<A>>>): Kind<F, Result<A>> =
                                 prepareLessonServiceProvider(queueToActor, lessonId, concurrent) {
                                     it.runWithLoadFromMemoryIfNeed(f)
                                 }
+
+                        override fun updateInactivityTime(): Kind<F, Unit> =
+                            concurrent.fx.concurrent {
+                                lessons.get().bind().keys.traverse_(concurrent.parApplicative()) { lessonId ->
+                                    prepareLessonServiceProvider(queueToActor, lessonId, concurrent) { lessonServiceProvider ->
+                                        lessonServiceProvider.runInMemoryOnly { lesson ->
+                                            LessonUpdateInactivityTime(time, concurrent).run(lesson)
+                                        }
+                                    }
+                                }.bind()
+                            }
 
                         override fun unloadInactive(inactiveTimeout: Duration): Kind<F, Int> {
                             //get keys from lessons map
@@ -108,6 +123,12 @@ class LessonServiceProvider<F>(private val inMemoryOrFromDb: Either<LessonServic
                 else ->
                     ifInDbOnly()
             }
+
+    fun <A> runInMemoryOnly(ifInMemory: (Lesson) -> Kind<F, Result<LessonState<A>>>): Kind<F, Result<A>> =
+            runInMemoryOrInDbOnly(
+                    ifInMemory,
+                    { Result.Error(ErrorMsg.LESSON_NOT_IN_MEMORY).just() }
+            )
 }
 
 /*
@@ -172,22 +193,21 @@ private class LessonServiceProviderProvider<F>(private val queueToActor: Queue<F
             )
 
     private fun lessonServiceProvider(lessonId: LessonId): Kind<F, LessonServiceProvider<F>> =
-        concurrent.fx.concurrent {
-            when (val lessonServiceOpt = lessons.get().bind()[lessonId].toOption()) {
-                is Some -> LessonServiceProvider(lessonServiceOpt.t.left(), concurrent).just()
-                is None ->
-                    when (val loadedLessonOpt = lessonStorage.getLesson(lessonId).bind()) {
-                        is Some -> {
-                            val lessonService = runLesson(loadedLessonOpt.t, concurrent)
-                            val boundLessonService = lessonService.bind()
-                            lessons.update { it + Pair(lessonId, boundLessonService) }.bind()
-                            LessonServiceProvider(lessonService.right(), concurrent).just()
+            concurrent.fx.concurrent {
+                when (val lessonServiceOpt = lessons.get().bind()[lessonId].toOption()) {
+                    is Some -> LessonServiceProvider(lessonServiceOpt.t.left(), concurrent).just()
+                    is None ->
+                        when (val loadedLessonOpt = lessonStorage.getLesson(lessonId).bind()) {
+                            is Some -> {
+                                val lessonService = runLesson(loadedLessonOpt.t, concurrent).bind()
+                                lessons.update { it + Pair(lessonId, lessonService) }.bind()
+                                LessonServiceProvider(lessonService.just().right(), concurrent).just()
+                            }
+                            is None ->
+                                LessonNotFoundException(lessonId).raiseError()
                         }
-                        is None ->
-                            LessonNotFoundException(lessonId).raiseError()
-                    }
-            }.bind()
-        }
+                }.bind()
+            }
 }
 
 data class WaitersQueue<F>(private val queue: List<AcquirePromise<F>>) {
